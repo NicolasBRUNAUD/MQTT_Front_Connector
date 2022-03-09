@@ -19,21 +19,23 @@ import {amqtt} from "./asyncmqtt.js"
  * @param {Nanoflow} onMessageNanoflow - Use the provided template as a starting point because the input parameters names are hardcoded in the javascript action
  * @param {MxObject} subscriberContext - Context object, it will be available in the triggered nanoflow as an input. It can typically be used to gather all the messages received for a topic ( like for timeseries).
 can be empty.
+ * @param {boolean} keepClientOpened - If true, you will be able to end the client by sending the the keyword "MqttClientEnd" as a payload message. 
+If false, the client will end after the first received message.
  * @returns {Promise.<void>}
  */
-export async function MQTT_Front_Subcribe(mqttServerURL, toTopic, onMessageNanoflow, subscriberContext) {
+export async function MQTT_Front_Subcribe(mqttServerURL, toTopic, onMessageNanoflow, subscriberContext, keepClientOpened) {
 	// BEGIN USER CODE
 
 			const client = await amqtt.connectAsync(mqttServerURL)
 			const toTopicLocal = await toTopic
 			const subscriberContextLocal = await subscriberContext
+			const keepClientOpenedLocal = await keepClientOpened
 			//console.log("Starting");
 
 			try {
 				await client.subscribe(toTopicLocal);
 				console.log("subscribe Done");
 			} catch (e){
-				// Do something about it!
 				console.log('Error on subscribtion for ' );
 				console.log(e.stack);
 				//process.exit();
@@ -42,22 +44,28 @@ export async function MQTT_Front_Subcribe(mqttServerURL, toTopic, onMessageNanof
 
 			try {
 				await client.on('message', async (topic, payload, packet) =>  {
-
+					// When a message is received
 					const payloadStr = await payload.toString();
-					try {
-						//console.log("Received in front : topic :"+topic+ " | payload : " + payload+ " | frontSubscribtor : " + subscriberContextLocal.getGuid());
-						await onMessageNanoflow({TopicParam:topic,PayloadParam:payloadStr,MqttFrontSubscriberContext:subscriberContextLocal});
-					
-					} catch (e){
-						// Do something about it!
-						console.log('Error on nanoflow call ' );
-						console.log(e.stack);
-						//process.exit();
-					}						
+					if ( payloadStr=='MqttClientEnd' ) {
+						// the end keyword force the end of the client
+						client.end();
+					} else {
+						// Trigger a nanoflow with the received message
+						try {
+							//console.log("Received in front : topic :"+topic+ " | payload : " + payload+ " | frontSubscribtor : " + subscriberContextLocal.getGuid());
+							await onMessageNanoflow({TopicParam:topic,PayloadParam:payloadStr,MqttFrontSubscriberContext:subscriberContextLocal});
+						} catch (e){
+							console.log('Error on nanoflow call ' );
+							console.log(e.stack);
+							//process.exit();
+						}	
+						if (!(keepClientOpenedLocal)) {
+							await client.end();
+						}
+					}
 				});
-				//console.log("Subcribtion Action defined");
+
 			} catch (e){
-				// Do something about it!
 				console.log('Error on subscribtion Action definition');
 				console.log(e.stack);
 				//process.exit();
