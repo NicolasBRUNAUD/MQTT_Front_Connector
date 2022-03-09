@@ -27,9 +27,8 @@ export async function MQTT_Front_Publish(mqttServerURL, topic, payload) {
 	try {
 		await client.publish(topic, payload);
 		await client.end();
-		console.log("Publish Done");
+		//console.log("Publish Done");
 	} catch (e){
-		// Do something about it!
 		console.log(e.stack);
 		//process.exit();
 	}		
