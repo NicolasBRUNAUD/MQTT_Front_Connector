@@ -5,11 +5,13 @@
 // - the code between BEGIN USER CODE and END USER CODE
 // - the code between BEGIN EXTRA CODE and END EXTRA CODE
 // Other code you write will be lost the next time you deploy the project.
+import "mx-global";
 import { Big } from "big.js";
 
 // BEGIN EXTRA CODE
 
 import {amqtt} from "./asyncmqtt.js"
+import {createMxObj,GetMxObj,CallRemove,MqttFront_ClientConnect} from  "./MqttFront_Routines.js";
 
 // END EXTRA CODE
 
@@ -17,21 +19,33 @@ import {amqtt} from "./asyncmqtt.js"
  * @param {string} mqttServerURL - Example : "ws://192.168.222.129:9001"
  * @param {string} topic
  * @param {string} payload
+ * @param {string} userName
+ * @param {string} password - Can be empty. Remember you are in front end, make sure to not expose the password for example is a constant.
+ * @param {"MqttFrontConnector.QoSEnum.QoS_0___received_at_most_once"|"MqttFrontConnector.QoSEnum.QoS_1___received_at_least_once"|"MqttFrontConnector.QoSEnum.QoS_2___received_exactly_once"} qoS
  * @returns {Promise.<void>}
  */
-export async function MQTT_Front_Publish(mqttServerURL, topic, payload) {
+export async function MQTT_Front_Publish(mqttServerURL, topic, payload, userName, password, qoS) {
 	// BEGIN USER CODE
 
-	const client = await amqtt.connectAsync(mqttServerURL)
+		// Open MQTT client by leveraging the lib async-mqtt.js
+		console.log("MqttFront : Publish start");
+		var client = await MqttFront_ClientConnect(mqttServerURL,undefined,undefined,userName,password,{clean: true});
 
-	try {
-		await client.publish(topic, payload);
-		await client.end();
-		//console.log("Publish Done");
-	} catch (e){
-		console.log(e.stack);
-		//process.exit();
-	}		
+		var options = {};
+		if (qoS!='QoS_0___received_at_most_once')   { options = Object.assign(options,{qos:0}); 	}
+		if (qoS!='QoS_1___received_at_least_once')  { options = Object.assign(options,{qos:1}); 	}
+		if (qoS!='QoS_2___received_exactly_once')   { options = Object.assign(options,{qos:2}); 	}
+		console.log('MqttFront : QoS : ' + qoS );
+
+
+		try {
+			await client.publish(topic, payload,options);
+			await client.end();
+			console.info("MqttFront : Publish Done " + topic + ' - payload : ' + payload);
+		} catch (e){
+			//console.log(e.stack);
+			throw new Error("MqttFront : Publish failed " + topic + ' - payload : ' + payload);
+		}		
 	
 	// END USER CODE
 }
