@@ -5,71 +5,294 @@
 // - the code between BEGIN USER CODE and END USER CODE
 // - the code between BEGIN EXTRA CODE and END EXTRA CODE
 // Other code you write will be lost the next time you deploy the project.
+import "mx-global";
 import { Big } from "big.js";
 
 // BEGIN EXTRA CODE
 
-import {amqtt} from "./asyncmqtt.js"
+
+import {createMxObj,GetMxObj,CallRemove,CallCommit,MqttFront_ClientConnect} from  "./MqttFront_Routines.js";
+
+
+async function CallMqttFrontSubscriberContext_Retrieve(subscriberContext_MendixUID) {
+	return new Promise(function(resolve,reject) {
+				mx.data.action({
+					params: {
+						applyto: "selection",
+						actionname: "MqttFrontConnector.MqttFrontSubscriberContext_Retrieve",
+        				guids:  [subscriberContext_MendixUID]
+					},
+					async: false,
+					callback: function(obj) {
+						// no MxObject expected
+						//alert("Just petted the cat a little : " + obj);
+						resolve(obj);
+					},
+					error: function(error) {
+						//alert("ERROR path NBD ");
+						reject("Could not retrieve object:", e);
+					},
+					onValidation: function(validations) {
+						//alert("There were " + validation.length + " validation errors");
+					}
+				});
+	});
+}
+
+async function CallMqttFrontSubscriberContext_Register(subscriberContext_MendixUID) {
+	return new Promise(function(resolve,reject) {
+
+				 mx.data.action({
+					params: {
+						applyto: "selection",
+						actionname: "MqttFrontConnector.MqttFrontSubscriberContext_Register",
+        				guids:  [subscriberContext_MendixUID]
+					},
+					async: false,
+					callback: function(obj) {
+						// no MxObject expected
+						//alert("Just petted the cat a little : " + obj);
+						resolve(true);
+					},
+					error: function(error) {
+						//alert("ERROR path NBD ");
+						reject("Could not register object:", e);
+					},
+					onValidation: function(validations) {
+						//alert("There were " + validation.length + " validation errors");
+					}
+				});
+
+	});
+}
 
 // END EXTRA CODE
 
 /**
+ * Open a MQTT client.
+ * Output : SubscriberContext object that can be used to collect timeseries.
  * @param {string} mqttServerURL - Example : "ws://192.168.222.129:9001"
- * @param {string} toTopic
- * @param {Nanoflow} onMessageNanoflow - Use the provided template as a starting point because the input parameters names are hardcoded in the javascript action
- * @param {MxObject} subscriberContext - Context object, it will be available in the triggered nanoflow as an input. It can typically be used to gather all the messages received for a topic ( like for timeseries).
-can be empty.
- * @param {boolean} keepClientOpened - If true, you will be able to end the client by sending the the keyword "MqttClientEnd" as a payload message. 
-If false, the client will end after the first received message.
- * @returns {Promise.<void>}
+ * @param {string} topic
+ * @param {Nanoflow} onMessageNanoflow - Duplicate the provided template as a starting point because the input parameters names are hardcoded in the javascript action
+ * @param {string} userName
+ * @param {string} password - Can be empty.
+ * @param {boolean} contextRegistered - Yes : Avoid duplication and garbage collection of SubcriberContext by registering a link with Mx Session, so you can safely use it as a dataview source, page reloading won't duplicate the context.
+No : Compatible with Offline for Native. Duplication of context can happen, to maintain the context unique, be cautious to call the subcribe only once, or provide the context as input of option "SubscriberContext" below.
+ * @param {MxObject} subscriberContext - Can be used to reconnect and keep an existing context.
+Not required if option ContextRegistered is active.
+If empty, a new one will be created (or retrieved if registered)
+ * @param {"MqttFrontConnector.ClientStoppedEnumeration.AfterFirstMessage"|"MqttFrontConnector.ClientStoppedEnumeration.UntilContextIsGarbageCollected"|"MqttFrontConnector.ClientStoppedEnumeration.UntilEndOfSession"} clientEnd - - Empty or AfterFirstMessage = the client will end after the first received message. 
+- UntilContextIsGarbage = the Mqtt client remains opened so you can use the SubcriberContext object to collect messages. The Mqtt client will be closed after the SubscriberContext is deleted (or gabage collected) when receiving the next message. 
+- UntilEndOfSession = Stop garbage collection of SubscriberContext. If client stop at timeout, you can keep the SubcriberContext and subscribe again .
+ * @param {Big} clientTimeout - can be empty
+ * @param {"MqttFrontConnector.QoSEnum.QoS_0___received_at_most_once"|"MqttFrontConnector.QoSEnum.QoS_1___received_at_least_once"|"MqttFrontConnector.QoSEnum.QoS_2___received_exactly_once"} qoS - Quality Of Service
+ * @returns {Promise.<MxObject>}
  */
-export async function MQTT_Front_Subcribe(mqttServerURL, toTopic, onMessageNanoflow, subscriberContext, keepClientOpened) {
+export async function MQTT_Front_Subcribe(mqttServerURL, topic, onMessageNanoflow, userName, password, contextRegistered, subscriberContext, clientEnd, clientTimeout, qoS) {
 	// BEGIN USER CODE
+	
+			console.log("MqttFront : Starting MQTT_Front_Subcribe");
+			var MqttClientUid;
+			var subscriberContext_MendixUID;
+			var subscriberContextAsParam=true;
 
-			const client = await amqtt.connectAsync(mqttServerURL)
-			const toTopicLocal = await toTopic
-			const subscriberContextLocal = await subscriberContext
-			const keepClientOpenedLocal = await keepClientOpened
-			//console.log("Starting");
+			// Prepare a MqttFrontSubscriberContext object which will be the output, to be used as a context in the future "on message" nanoflows
+			//Check if provided as param or create it. If provided, eventually use the URL and topic from it.
+			if (subscriberContext==undefined) {
+				var subscriberContext = await createMxObj("MqttFrontConnector.MqttFrontSubscriberContext");
+				subscriberContextAsParam=false;
+			} else {
+				if (mqttServerURL==undefined) {
+					mqttServerURL= await subscriberContext.get("ServerUrl");
+				}
+				if (topic==undefined) {
+					topic= await subscriberContext.get("Topic");
+				}
+			}
 
+			// Prepare it 
+			subscriberContext_MendixUID = await subscriberContext.getGuid() ;
+			MqttClientUid= await subscriberContext.get("MqttClientUID");
+			if ((MqttClientUid==undefined)|(MqttClientUid=='')|(MqttClientUid==null)) {
+				MqttClientUid = await subscriberContext_MendixUID + '-' + Math.floor(Math.random() * 100000);
+				await subscriberContext.set("MqttClientUID",MqttClientUid);
+			}			
+			await subscriberContext.set("ServerUrl",mqttServerURL);
+			await subscriberContext.set("Topic",topic);
+
+			// May be replaced by an existing one, however, it's still need to be created to be submitted to the "retrieve" microflow
+			//console.info("contextRegistered : " + contextRegistered + " - subscriberContextAsParam : " + subscriberContextAsParam);
+			if ((contextRegistered==true)&(subscriberContextAsParam==false)) {			
+				// Try to retrieve an existing subscriberContext already connected and eventually return it to avoid duplication
+				var subscriberContext_existing = await CallMqttFrontSubscriberContext_Retrieve(subscriberContext_MendixUID) ; // Call the "retrieve" microflow
+				//console.info("subscriberContext_existing : " + subscriberContext_existing);
+				if (subscriberContext_existing!=null) {
+					console.info("MqttFront : Retrieved existing client : " + subscriberContext_existing + ' - topic ' + topic + ' on server : ' + mqttServerURL);
+					await CallRemove(subscriberContext_MendixUID);
+
+					subscriberContext = await GetMxObj(subscriberContext_existing);
+					subscriberContext_MendixUID= await subscriberContext.getGuid();
+					MqttClientUid= await subscriberContext_MendixUID + '-' + Math.floor(Math.random() * 100000);
+					await subscriberContext.set("MqttClientUID",MqttClientUid);
+					await CallCommit(subscriberContext);  //if subscribtion, will tigger the closing of previous client, otherwise it will wait for next message to close
+
+				}
+			} 
+
+			//Prepare MQTT options
+			var options = {};
+			if (qoS=='QoS_0___received_at_most_once')   { options = Object.assign(options,{qos:0}); 	}
+			if (qoS=='QoS_1___received_at_least_once')  { options = Object.assign(options,{qos:1}); 	}
+			if (qoS=='QoS_2___received_exactly_once')   { options = Object.assign(options,{qos:2}); 	}
+			console.log('MqttFront : qoS                         : ' + qoS );
+			console.log('MqttFront : publish option         : ' + JSON.stringify(options) );
+
+
+			//Create the MQTT subscription 
+			var client = await MqttFront_ClientConnect(mqttServerURL,MqttClientUid,clientTimeout,userName,password,{clean: false,keepalive: 100});
+			await client.on('connect', function (connack) {
+					console.log('MqttFront : reconnection from subsribe code ' + connack.sessionPresent  );
+				}
+			);	
+
+			
 			try {
-				await client.subscribe(toTopicLocal);
-				console.log("subscribe Done");
+				await client.subscribe(topic,options);
+				console.info('MqttFront : subscribe Topic : ' + topic +' - client ' +  MqttClientUid);
 			} catch (e){
-				console.log('Error on subscribtion for ' );
-				console.log(e.stack);
-				//process.exit();
+				//console.log(e.stack);
+				throw new Error('MqttFront : subscribe failed for topic ' + topic + ' on server : ' + mqttServerURL);
 			}		
+			
 
 
+
+
+			// Associate subscriberContext to the Mendix User session to be able to retrieve it later and avoid duplication
+			if (contextRegistered==true) {
+				try {
+					await CallMqttFrontSubscriberContext_Register(subscriberContext_MendixUID) ;
+				} catch (e){
+					throw new Error('MqttFront : Error on microflow registering subscriberContext  '  );
+				}	
+			}
+
+
+			// Set a default value of option clientEnd
+			console.log("MqttFront : clientEnd : " + clientEnd);
+			if (clientEnd == undefined) {
+				 clientEnd = 'AfterFirstMessage';
+				 console.log("MqttFront : clientEnd : " + clientEnd);
+			}
+
+			// subscribe stop garbage collection  but don't provide a solution to retrieve
+			if (clientEnd == 'UntilEndOfSession') {
+				try {
+					// Subscribe to all changes in an MxObject
+					var subscription = await mx.data.subscribe({
+						// could detect deletion of objects and close client without waiting for next message.
+						guid: subscriberContext_MendixUID,
+						callback: async function(guid) {
+							console.log("MqttFront :Object with guid " + guid + " changed");
+							var subscriberContextCallback=await GetMxObj(guid);
+							var unsubscribeBoolean=await subscriberContextCallback.get("Unsubscribe");
+							if (unsubscribeBoolean ==true) {
+								await mx.data.unsubscribe(subscription);
+								client.end();
+							}
+							var MqttClientUid_refreshed=await subscriberContextCallback.get('MqttClientUID');
+							if (MqttClientUid_refreshed!=MqttClientUid) {
+								console.info("MqttFront : Client ID has changed, keep context but close old connection : "+  MqttClientUid +' > ' + MqttClientUid_refreshed);
+								await mx.data.unsubscribe(subscription);
+								client.end();
+							}							
+						}
+					});
+				} catch (e){
+					throw new Error('MqttFront : Error on subscribtion Action definition for topic ' + topic + ' on server : ' + mqttServerURL);
+				}	
+			}
+
+
+
+			//DELETE subscriberContext on closing client
+			try {
+				await client.on('end', async () =>  {
+					console.info('MqttFront : END of  Client : ' + MqttClientUid );
+					//await CallRemove(subscriberContext_MendixUID);
+				});
+			} catch (e){
+				throw new Error('MqttFront : Error on subscription Action definition for topic ' + topic + ' on server : ' + mqttServerURL);
+			}	
+
+
+
+
+			// When a message is received
 			try {
 				await client.on('message', async (topic, payload, packet) =>  {
-					// When a message is received
+
 					const payloadStr = await payload.toString();
-					if ( payloadStr=='MqttClientEnd' ) {
-						// the end keyword force the end of the client
-						client.end();
-					} else {
-						// Trigger a nanoflow with the received message
-						try {
-							//console.log("Received in front : topic :"+topic+ " | payload : " + payload+ " | frontSubscribtor : " + subscriberContextLocal.getGuid());
-							await onMessageNanoflow({TopicParam:topic,PayloadParam:payloadStr,MqttFrontSubscriberContext:subscriberContextLocal});
-						} catch (e){
-							console.log('Error on nanoflow call ' );
-							console.log(e.stack);
-							//process.exit();
-						}	
-						if (!(keepClientOpenedLocal)) {
+
+					// Manage Keywords to end the client
+					if ( payloadStr.substring(0,13)=='MqttClientEnd' ) {
+						const Target = await payloadStr.substring(14,payloadStr.length) ;
+						console.log('MqttFront : Close target "' +  Target + '"');
+						if ( Target=='All' ) {
+							// the end keyword force the end of all clients of this topics
+							console.info('MqttFront : Topic : ' + topic +' - Close all clients including ' +  MqttClientUid);
 							await client.end();
+						}
+						if ( Target==MqttClientUid ) {
+							// the end keyword force the end of the current client of this topics
+							console.info('MqttFront : Topic : ' + topic +' - Close one client ' +  MqttClientUid);
+							await client.end();
+						}
+
+					} else {
+
+						// Refresh subscriberContext object, may become null if garbage collected, or clientID may have change !
+						subscriberContext = await GetMxObj(subscriberContext_MendixUID);
+						console.log("MqttFront : Refresh subscriberContext : " + subscriberContext);
+
+						//if MqttClientUid has changed on subscriberContext, close connection at next step
+						if (subscriberContext!=null) {
+							var MqttClientUid_refreshed=await subscriberContext.get('MqttClientUID');
+							if (MqttClientUid_refreshed!=MqttClientUid) {
+								console.info("MqttFront : Client ID has changed, close old connection : "+  MqttClientUid +' > ' + MqttClientUid_refreshed);
+								subscriberContext=null;	
+							}
+						}
+						
+						// If context is garbage and if option is active ,  close it
+						if ((subscriberContext==null) & (clientEnd != 'AfterFirstMessage')) {
+								console.log("MqttFront : The MqttFrontSubscriberContext doesn't exist anymore, it was probably garbage collected, let's close client" );
+								console.info("MqttFront : Auto Close client due to garbage collection : "+  MqttClientUid );
+								await client.end();
+						
+						} else {
+
+							// Trigger a nanoflow with the received message, eventually subscriberContext is null if garbage
+							try {					
+								await onMessageNanoflow({TopicParam:topic,PayloadParam:payloadStr,SubscriberContext:subscriberContext,MqttClientUid:MqttClientUid});														
+							} catch (e){
+								//console.log(e.stack);
+								throw new Error('MqttFront : Error on nanoflow call for topic ' + topic + ' on server : ' + mqttServerURL + ' - Client UID : '+  MqttClientUid + ' - Payload : '+  payloadStr );
+							}	
+
+							// End after first message if option is chosen
+							if (clientEnd == 'AfterFirstMessage') {
+								await client.end();
+							}
 						}
 					}
 				});
 
 			} catch (e){
-				console.log('Error on subscribtion Action definition');
-				console.log(e.stack);
-				//process.exit();
+				throw new Error('MqttFront : Error on subscribtion Action definition for topic ' + topic + ' on server : ' + mqttServerURL);
 			}
-	
+
+			return subscriberContext;
+
 	// END USER CODE
 }
